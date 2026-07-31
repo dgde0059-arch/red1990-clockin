@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>紅.1990 員工打卡</title>
+  <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, "PingFang TC", "Noto Sans TC", sans-serif;
+      background: #f5f1eb;
+      margin: 0;
+      padding: 20px;
+      color: #3a2f28;
+    }
+    .card {
+      background: #fff;
+      border-radius: 16px;
+      padding: 24px;
+      max-width: 420px;
+      margin: 0 auto;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+    }
+    h1 {
+      font-size: 20px;
+      text-align: center;
+      margin-bottom: 4px;
+      color: #7a3b2e;
+    }
+    .sub {
+      text-align: center;
+      color: #999;
+      font-size: 13px;
+      margin-bottom: 20px;
+    }
+    label {
+      display: block;
+      font-size: 14px;
+      margin-bottom: 6px;
+      margin-top: 14px;
+      color: #555;
+    }
+    input {
+      width: 100%;
+      padding: 12px;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      font-size: 16px;
+    }
+    button {
+      width: 100%;
+      padding: 14px;
+      border: none;
+      border-radius: 10px;
+      font-size: 16px;
+      font-weight: bold;
+      margin-top: 20px;
+      cursor: pointer;
+    }
+    .btn-in { background: #7a3b2e; color: #fff; }
+    .btn-out { background: #444; color: #fff; margin-top: 10px; }
+    .btn-bind { background: #7a3b2e; color: #fff; }
+    .btn-gps { background: #eef2f7; color: #445; margin-top: 12px; }
+    .status {
+      text-align: center;
+      margin-top: 16px;
+      font-size: 14px;
+      padding: 10px;
+      border-radius: 8px;
+      display: none;
+    }
+    .status.ok { background: #e6f4ea; color: #1e7b34; display: block; }
+    .status.fail { background: #fdecea; color: #b3261e; display: block; }
+    .status.info { background: #eef2f7; color: #445; display: block; }
+    .whoami {
+      text-align: center;
+      font-size: 15px;
+      margin-bottom: 10px;
+      color: #7a3b2e;
+      font-weight: bold;
+    }
+    .whoami img {
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      vertical-align: middle;
+      margin-right: 8px;
+    }
+    .gps-note {
+      font-size: 12px;
+      color: #999;
+      text-align: center;
+      margin-top: 8px;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>紅.1990 員工打卡</h1>
+    <div class="sub" id="subText">連接 LINE 中...</div>
+
+    <div id="bindSection" style="display:none;">
+      <label>員工姓名</label>
+      <input type="text" id="staffNameInput" placeholder="請輸入與員工設定表一致的姓名">
+      <label>綁定 PIN（向管理員索取）</label>
+      <input type="text" id="pinInput" placeholder="4 碼數字">
+      <button class="btn-bind" onclick="doBind()">綁定這個 LINE 帳號</button>
+    </div>
+
+    <div id="clockSection" style="display:none;">
+      <div class="whoami" id="whoamiText"></div>
+      <label>店內到店代碼</label>
+      <input type="text" id="storeCodeInput" placeholder="請輸入店內公告的代碼" inputmode="numeric">
+      <div class="gps-note" id="gpsNote">尚未定位</div>
+      <button class="btn-gps" onclick="requestGps()">📍 取得定位</button>
+      <button class="btn-in" onclick="doClock('上班')">上班打卡</button>
+      <button class="btn-out" onclick="doClock('下班')">下班打卡</button>
+    </div>
+
+    <div class="status" id="statusBox"></div>
+  </div>
+
+  <script>
+    // ⬇️ 這行請改成你自己的 GAS 部署網址（跟你之前傳給我的那個 /exec 網址一樣）
+    const GAS_URL = 'https://script.google.com/macros/s/AKfycbxp2-zAkzNFuL9z6T85TOw-pxuqbUx-wxRFcK1w2QdTy0lcg2cwe9bNztF9Pm-TDfCrog/exec';
+    const LIFF_ID = '2010901957-RT9R4pN1';
+
+    let lineUserId = null;
+    let lineDisplayName = '';
+    let linePictureUrl = '';
+    let currentLat = null;
+    let currentLng = null;
+
+    function showStatus(msg, type) {
+      const box = document.getElementById('statusBox');
+      box.textContent = msg;
+      box.className = 'status ' + type;
+    }
+
+    // 呼叫 GAS 後端：改用 GET 帶查詢參數（比 POST 更不容易被手機瀏覽器的跨網域限制擋下）
+    async function callGas(action, payload) {
+      const params = new URLSearchParams(Object.assign({ action: action }, payload));
+      const res = await fetch(GAS_URL + '?' + params.toString(), { method: 'GET' });
+      if (!res.ok) throw new Error('伺服器回應異常 (' + res.status + ')');
+      return await res.json();
+    }
+
+    async function startLiff() {
+      try {
+        await liff.init({ liffId: LIFF_ID });
+        if (!liff.isLoggedIn()) {
+          liff.login();
+          return;
+        }
+        const profile = await liff.getProfile();
+        lineUserId = profile.userId;
+        lineDisplayName = profile.displayName;
+        linePictureUrl = profile.pictureUrl || '';
+        document.getElementById('subText').textContent = '已連接 LINE：' + lineDisplayName;
+        checkBindingStatus();
+      } catch (err) {
+        document.getElementById('subText').textContent = 'LINE 連接失敗';
+        showStatus('LIFF 初始化錯誤：' + (err && err.message ? err.message : String(err)), 'fail');
+      }
+    }
+
+    async function checkBindingStatus() {
+      try {
+        const res = await callGas('getStatus', { lineUserId: lineUserId });
+        if (res.bound) {
+          document.getElementById('bindSection').style.display = 'none';
+          document.getElementById('clockSection').style.display = 'block';
+          const img = linePictureUrl ? '<img src="' + linePictureUrl + '">' : '';
+          document.getElementById('whoamiText').innerHTML = img + '目前身份：' + res.staffName;
+        } else {
+          document.getElementById('bindSection').style.display = 'block';
+          document.getElementById('clockSection').style.display = 'none';
+        }
+      } catch (err) {
+        showStatus('讀取綁定狀態失敗：' + err.message, 'fail');
+      }
+    }
+
+    function requestGps() {
+      const note = document.getElementById('gpsNote');
+      note.textContent = '定位中，請留意是否跳出授權詢問...';
+      if (!navigator.geolocation) {
+        note.textContent = '此裝置不支援定位，請改用其他手機';
+        return;
+      }
+      navigator.geolocation.getCurrentPosition(function (pos) {
+        currentLat = pos.coords.latitude;
+        currentLng = pos.coords.longitude;
+        note.textContent = '定位完成（誤差約 ' + Math.round(pos.coords.accuracy) + ' 公尺）';
+      }, function (err) {
+        if (err.code === 1) {
+          note.textContent = '定位被拒絕，請到手機設定開啟 LINE 的定位權限，再點一次「取得定位」';
+        } else if (err.code === 2) {
+          note.textContent = '目前無法取得位置，請確認手機定位服務(GPS)已開啟';
+        } else if (err.code === 3) {
+          note.textContent = '定位逾時，請到空曠處或靠近窗邊再試一次';
+        } else {
+          note.textContent = '定位失敗，請再點一次「取得定位」';
+        }
+      }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
+    }
+
+    async function doBind() {
+      const staffName = document.getElementById('staffNameInput').value.trim();
+      const pin = document.getElementById('pinInput').value.trim();
+      if (!staffName || !pin) {
+        showStatus('請輸入姓名與 PIN', 'fail');
+        return;
+      }
+      showStatus('綁定中...', 'info');
+      try {
+        const res = await callGas('bind', {
+          staffName: staffName,
+          pin: pin,
+          lineUserId: lineUserId,
+          lineDisplayName: lineDisplayName
+        });
+        if (res.success) {
+          showStatus('綁定成功！這個 LINE 帳號以後開啟都會自動認得你。', 'ok');
+          setTimeout(checkBindingStatus, 1000);
+        } else {
+          showStatus(res.message, 'fail');
+        }
+      } catch (err) {
+        showStatus('綁定失敗：' + err.message, 'fail');
+      }
+    }
+
+    async function doClock(action) {
+      const storeCode = document.getElementById('storeCodeInput').value.trim();
+      if (!storeCode) {
+        showStatus('請輸入店內到店代碼', 'fail');
+        return;
+      }
+      if (currentLat === null || currentLng === null) {
+        showStatus('尚未取得定位，請先按「取得定位」', 'fail');
+        return;
+      }
+      showStatus('處理中...', 'info');
+      try {
+        const res = await callGas('clock', {
+          lineUserId: lineUserId,
+          clockType: action,
+          lat: currentLat,
+          lng: currentLng,
+          storeCode: storeCode
+        });
+        showStatus(res.message, res.success ? 'ok' : 'fail');
+      } catch (err) {
+        showStatus('打卡失敗：' + err.message, 'fail');
+      }
+    }
+
+    startLiff();
+  </script>
+</body>
+</html>
